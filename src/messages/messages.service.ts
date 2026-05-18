@@ -1,0 +1,22 @@
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../database/prisma.service';
+import { ConversationsService } from '../conversations/conversations.service';
+@Injectable()
+export class MessagesService { constructor(private prisma: PrismaService, private conversations: ConversationsService) {}
+  async send(conversationId: string, senderId: string, body: string, idempotencyKey?: string) {
+    await this.conversations.assertMember(conversationId, senderId);
+    if (idempotencyKey) { const existing = await this.prisma.message.findUnique({ where: { senderId_idempotencyKey: { senderId, idempotencyKey } } }); if (existing) return existing; }
+    return this.prisma.$transaction(async (tx) => {
+      const message = await tx.message.create({ data: { conversationId, senderId, body, idempotencyKey, deliveries: { create: { userId: senderId, status: 'DELIVERED', deliveredAt: new Date() } } } });
+      await tx.outboxEvent.create({ data: { aggregateType: 'Message', aggregateId: message.id, eventName: 'message:new', payload: message as any, conversationId, messageId: message.id } });
+      await tx.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return message;
+    });
+  }
+  async list(conversationId: string, userId: string, cursor?: string, limit = 30) { await this.conversations.assertMember(conversationId, userId); return this.prisma.message.findMany({ where: { conversationId, deletedAt: null }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: Math.min(limit, 100), ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) }); }
+  async edit(messageId: string, userId: string, body: string) { const msg = await this.prisma.message.findUnique({ where: { id: messageId } }); if (!msg) throw new NotFoundException(); if (msg.senderId !== userId) throw new ForbiddenException('only sender can edit'); return this.prisma.$transaction(async (tx) => { await tx.messageEditHistory.create({ data: { messageId, editorId: userId, previousBody: msg.body, newBody: body } }); const updated = await tx.message.update({ where: { id: messageId }, data: { body, editedAt: new Date() } }); await tx.outboxEvent.create({ data: { aggregateType: 'Message', aggregateId: messageId, eventName: 'message:updated', payload: updated as any, conversationId: msg.conversationId, messageId } }); return updated; }); }
+  async delete(messageId: string, userId: string) { const msg = await this.prisma.message.findUnique({ where: { id: messageId } }); if (!msg) throw new NotFoundException(); if (msg.senderId !== userId) throw new ForbiddenException('only sender can delete'); const deleted = await this.prisma.message.update({ where: { id: messageId }, data: { deletedAt: new Date(), body: '' } }); await this.prisma.outboxEvent.create({ data: { aggregateType: 'Message', aggregateId: messageId, eventName: 'message:deleted', payload: { id: messageId, conversationId: msg.conversationId }, conversationId: msg.conversationId, messageId } }); return deleted; }
+  async ack(messageId: string, userId: string) { const msg = await this.prisma.message.findUnique({ where: { id: messageId } }); if (!msg) throw new NotFoundException(); await this.conversations.assertMember(msg.conversationId, userId); return this.prisma.messageDelivery.upsert({ where: { messageId_userId: { messageId, userId } }, update: { status: 'DELIVERED', deliveredAt: new Date() }, create: { messageId, userId, status: 'DELIVERED', deliveredAt: new Date() } }); }
+  async read(conversationId: string, userId: string, messageId: string) { await this.conversations.assertMember(conversationId, userId); return this.prisma.$transaction(async (tx) => { const receipt = await tx.messageReadReceipt.upsert({ where: { conversationId_userId_messageId: { conversationId, userId, messageId } }, update: { readAt: new Date() }, create: { conversationId, userId, messageId } }); await tx.outboxEvent.create({ data: { aggregateType: 'Conversation', aggregateId: conversationId, eventName: 'message:read', payload: { conversationId, userId, messageId, readAt: receipt.readAt }, conversationId, messageId } }); return receipt; }); }
+  async unreadCount(conversationId: string, userId: string) { const latest = await this.prisma.messageReadReceipt.findFirst({ where: { conversationId, userId }, orderBy: { readAt: 'desc' } }); return this.prisma.message.count({ where: { conversationId, senderId: { not: userId }, deletedAt: null, ...(latest ? { createdAt: { gt: latest.readAt } } : {}) } }); }
+}

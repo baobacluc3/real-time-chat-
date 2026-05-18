@@ -1,0 +1,13 @@
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../database/prisma.service';
+@Injectable()
+export class ConversationsService { constructor(private prisma: PrismaService) {}
+  async assertMember(conversationId: string, userId: string) { const member = await this.prisma.conversationMember.findFirst({ where: { conversationId, userId, leftAt: null } }); if (!member) throw new ForbiddenException('not a conversation member'); return member; }
+  async direct(userId: string, peerUserId: string) { const directKey = [userId, peerUserId].sort().join(':'); return this.prisma.conversation.upsert({ where: { directKey }, update: {}, create: { type: 'DIRECT', directKey, createdById: userId, members: { createMany: { data: [{ userId, role: 'OWNER' }, { userId: peerUserId, role: 'MEMBER' }] } } }, include: { members: true } }); }
+  group(userId: string, title: string, memberIds: string[]) { const ids = Array.from(new Set([userId, ...memberIds])); return this.prisma.conversation.create({ data: { type: 'GROUP', title, createdById: userId, members: { createMany: { data: ids.map((id) => ({ userId: id, role: id === userId ? 'OWNER' : 'MEMBER' })) } }, outboxEvents: { create: { aggregateType: 'Conversation', aggregateId: 'new', eventName: 'conversation:created', payload: { title } } } }, include: { members: true } }); }
+  list(userId: string) { return this.prisma.conversation.findMany({ where: { members: { some: { userId, leftAt: null } } }, include: { members: true, messages: { orderBy: { createdAt: 'desc' }, take: 1 } }, orderBy: { updatedAt: 'desc' } }); }
+  async get(id: string, userId: string) { await this.assertMember(id, userId); const c = await this.prisma.conversation.findUnique({ where: { id }, include: { members: true } }); if (!c) throw new NotFoundException(); return c; }
+  async addMember(id: string, actorId: string, userId: string, role: 'ADMIN' | 'MEMBER' = 'MEMBER') { await this.assertMember(id, actorId); return this.prisma.conversationMember.upsert({ where: { conversationId_userId: { conversationId: id, userId } }, update: { leftAt: null, role }, create: { conversationId: id, userId, role } }); }
+  async removeMember(id: string, actorId: string, userId: string) { await this.assertMember(id, actorId); return this.prisma.conversationMember.update({ where: { conversationId_userId: { conversationId: id, userId } }, data: { leftAt: new Date() } }); }
+  memberConversationIds(userId: string) { return this.prisma.conversationMember.findMany({ where: { userId, leftAt: null }, select: { conversationId: true } }); }
+}

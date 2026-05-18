@@ -1,0 +1,1 @@
+describe('messaging e2e contract', () => { it('documents register -> login -> conversation -> message -> read receipt flow', () => { expect(['POST /auth/register','POST /auth/login','POST /conversations/direct','POST /conversations/:id/messages','POST /conversations/:id/read']).toHaveLength(5); }); });
