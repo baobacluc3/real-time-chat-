@@ -1,0 +1,34 @@
+CREATE TYPE "ConversationType" AS ENUM ('DIRECT', 'GROUP');
+CREATE TYPE "MessageStatus" AS ENUM ('SENT', 'DELIVERED', 'READ', 'FAILED');
+CREATE TYPE "MessageType" AS ENUM ('TEXT', 'SYSTEM');
+CREATE TYPE "OutboxStatus" AS ENUM ('PENDING', 'PUBLISHED', 'FAILED');
+CREATE TYPE "ConversationRole" AS ENUM ('OWNER', 'ADMIN', 'MEMBER');
+
+CREATE TABLE "User" ("id" TEXT PRIMARY KEY, "email" TEXT NOT NULL UNIQUE, "username" TEXT NOT NULL UNIQUE, "displayName" TEXT NOT NULL, "passwordHash" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE "Session" ("id" TEXT PRIMARY KEY, "refreshTokenHash" TEXT NOT NULL, "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "expiresAt" TIMESTAMP(3) NOT NULL, "revokedAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE "Conversation" ("id" TEXT PRIMARY KEY, "type" "ConversationType" NOT NULL, "title" TEXT, "directKey" TEXT UNIQUE, "createdById" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE "ConversationMember" ("id" TEXT PRIMARY KEY, "conversationId" TEXT NOT NULL REFERENCES "Conversation"("id") ON DELETE CASCADE, "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "role" "ConversationRole" NOT NULL DEFAULT 'MEMBER', "mutedUntil" TIMESTAMP(3), "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "leftAt" TIMESTAMP(3), UNIQUE ("conversationId", "userId"));
+CREATE TABLE "Message" ("id" TEXT PRIMARY KEY, "conversationId" TEXT NOT NULL REFERENCES "Conversation"("id") ON DELETE CASCADE, "senderId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "type" "MessageType" NOT NULL DEFAULT 'TEXT', "body" TEXT NOT NULL, "status" "MessageStatus" NOT NULL DEFAULT 'SENT', "idempotencyKey" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "editedAt" TIMESTAMP(3), "deletedAt" TIMESTAMP(3), UNIQUE ("senderId", "idempotencyKey"));
+CREATE TABLE "MessageDelivery" ("id" TEXT PRIMARY KEY, "messageId" TEXT NOT NULL REFERENCES "Message"("id") ON DELETE CASCADE, "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "status" "MessageStatus" NOT NULL DEFAULT 'SENT', "deliveredAt" TIMESTAMP(3), UNIQUE ("messageId", "userId"));
+CREATE TABLE "MessageReadReceipt" ("id" TEXT PRIMARY KEY, "conversationId" TEXT NOT NULL REFERENCES "Conversation"("id") ON DELETE CASCADE, "messageId" TEXT NOT NULL REFERENCES "Message"("id") ON DELETE CASCADE, "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "readAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE ("conversationId", "userId", "messageId"));
+CREATE TABLE "MessageEditHistory" ("id" TEXT PRIMARY KEY, "messageId" TEXT NOT NULL REFERENCES "Message"("id") ON DELETE CASCADE, "editorId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "previousBody" TEXT NOT NULL, "newBody" TEXT NOT NULL, "editedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE "UserBlock" ("id" TEXT PRIMARY KEY, "blockerId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "blockedId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE ("blockerId", "blockedId"));
+CREATE TABLE "OutboxEvent" ("id" TEXT PRIMARY KEY, "aggregateType" TEXT NOT NULL, "aggregateId" TEXT NOT NULL, "eventName" TEXT NOT NULL, "payload" JSONB NOT NULL, "status" "OutboxStatus" NOT NULL DEFAULT 'PENDING', "attempts" INTEGER NOT NULL DEFAULT 0, "nextAttemptAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "publishedAt" TIMESTAMP(3), "lastError" TEXT, "conversationId" TEXT REFERENCES "Conversation"("id") ON DELETE CASCADE, "messageId" TEXT REFERENCES "Message"("id") ON DELETE CASCADE, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE "AuditLog" ("id" TEXT PRIMARY KEY, "actorId" TEXT REFERENCES "User"("id") ON DELETE SET NULL, "action" TEXT NOT NULL, "targetType" TEXT NOT NULL, "targetId" TEXT, "metadata" JSONB, "requestId" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+
+CREATE INDEX "User_username_idx" ON "User"("username");
+CREATE INDEX "User_createdAt_idx" ON "User"("createdAt");
+CREATE INDEX "Session_userId_idx" ON "Session"("userId");
+CREATE INDEX "Conversation_type_updatedAt_idx" ON "Conversation"("type", "updatedAt");
+CREATE INDEX "ConversationMember_userId_leftAt_idx" ON "ConversationMember"("userId", "leftAt");
+CREATE INDEX "ConversationMember_conversationId_leftAt_idx" ON "ConversationMember"("conversationId", "leftAt");
+CREATE INDEX "Message_conversationId_createdAt_id_idx" ON "Message"("conversationId", "createdAt", "id");
+CREATE INDEX "Message_senderId_createdAt_idx" ON "Message"("senderId", "createdAt");
+CREATE INDEX "Message_deletedAt_idx" ON "Message"("deletedAt");
+CREATE INDEX "MessageDelivery_userId_status_idx" ON "MessageDelivery"("userId", "status");
+CREATE INDEX "MessageReadReceipt_conversationId_userId_readAt_idx" ON "MessageReadReceipt"("conversationId", "userId", "readAt");
+CREATE INDEX "MessageEditHistory_messageId_editedAt_idx" ON "MessageEditHistory"("messageId", "editedAt");
+CREATE INDEX "OutboxEvent_status_nextAttemptAt_idx" ON "OutboxEvent"("status", "nextAttemptAt");
+CREATE INDEX "OutboxEvent_aggregateType_aggregateId_idx" ON "OutboxEvent"("aggregateType", "aggregateId");
+CREATE INDEX "AuditLog_actorId_createdAt_idx" ON "AuditLog"("actorId", "createdAt");
+CREATE INDEX "AuditLog_requestId_idx" ON "AuditLog"("requestId");

@@ -1,0 +1,176 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql" url = env("DATABASE_URL") }
+
+enum ConversationType { DIRECT GROUP }
+enum MessageStatus { SENT DELIVERED READ FAILED }
+enum MessageType { TEXT SYSTEM }
+enum OutboxStatus { PENDING PUBLISHED FAILED }
+enum ConversationRole { OWNER ADMIN MEMBER }
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String   @unique
+  displayName  String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  sessions     Session[]
+  memberships  ConversationMember[]
+  messages     Message[]
+  deliveries   MessageDelivery[]
+  readReceipts MessageReadReceipt[]
+  editHistory  MessageEditHistory[]
+  blocksMade   UserBlock[] @relation("BlocksMade")
+  blocksReceived UserBlock[] @relation("BlocksReceived")
+  auditLogs    AuditLog[]
+
+  @@index([username])
+  @@index([createdAt])
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  refreshTokenHash String
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime @default(now())
+  @@index([userId])
+}
+
+model Conversation {
+  id        String @id @default(cuid())
+  type      ConversationType
+  title     String?
+  directKey String? @unique
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members ConversationMember[]
+  messages Message[]
+  receipts MessageReadReceipt[]
+  outboxEvents OutboxEvent[]
+  @@index([type, updatedAt])
+}
+
+model ConversationMember {
+  id             String @id @default(cuid())
+  conversationId String
+  userId         String
+  role           ConversationRole @default(MEMBER)
+  mutedUntil     DateTime?
+  joinedAt       DateTime @default(now())
+  leftAt         DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([conversationId, userId])
+  @@index([userId, leftAt])
+  @@index([conversationId, leftAt])
+}
+
+model Message {
+  id             String @id @default(cuid())
+  conversationId String
+  senderId       String
+  type           MessageType @default(TEXT)
+  body           String
+  status         MessageStatus @default(SENT)
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  editedAt       DateTime?
+  deletedAt      DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  deliveries     MessageDelivery[]
+  readReceipts   MessageReadReceipt[]
+  editHistory    MessageEditHistory[]
+  outboxEvents   OutboxEvent[]
+  @@unique([senderId, idempotencyKey])
+  @@index([conversationId, createdAt, id])
+  @@index([senderId, createdAt])
+  @@index([deletedAt])
+}
+
+model MessageDelivery {
+  id        String @id @default(cuid())
+  messageId String
+  userId    String
+  status    MessageStatus @default(SENT)
+  deliveredAt DateTime?
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([messageId, userId])
+  @@index([userId, status])
+}
+
+model MessageReadReceipt {
+  id             String @id @default(cuid())
+  conversationId String
+  messageId      String
+  userId         String
+  readAt         DateTime @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([conversationId, userId, messageId])
+  @@index([conversationId, userId, readAt])
+}
+
+model MessageEditHistory {
+  id        String @id @default(cuid())
+  messageId String
+  editorId  String
+  previousBody String
+  newBody   String
+  editedAt  DateTime @default(now())
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  editor    User @relation(fields: [editorId], references: [id], onDelete: Cascade)
+  @@index([messageId, editedAt])
+}
+
+model UserBlock {
+  id String @id @default(cuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+  blocker User @relation("BlocksMade", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+  @@unique([blockerId, blockedId])
+}
+
+model OutboxEvent {
+  id String @id @default(cuid())
+  aggregateType String
+  aggregateId String
+  eventName String
+  payload Json
+  status OutboxStatus @default(PENDING)
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  publishedAt DateTime?
+  lastError String?
+  conversationId String?
+  messageId String?
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([status, nextAttemptAt])
+  @@index([aggregateType, aggregateId])
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+  actorId String?
+  action String
+  targetType String
+  targetId String?
+  metadata Json?
+  requestId String?
+  createdAt DateTime @default(now())
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  @@index([actorId, createdAt])
+  @@index([requestId])
+}
